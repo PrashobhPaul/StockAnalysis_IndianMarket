@@ -1,0 +1,54 @@
+{
+  "name": "ProfitPilot — Rule-Based NSE Intelligence",
+  "short_name": "ProfitPilot",
+  "description": "Daily rule-based, backtest-gated NSE stock intelligence. FinBERT + CANSLIM + 3-year walk-forward validation.",
+  "start_url": "./index.html?utm_source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait-primary",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "lang": "en-IN",
+  "dir": "ltr",
+  "categories": ["finance", "business", "productivity"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Today's picks",
+      "url": "./index.html#picks",
+      "description": "Jump to today's qualifying stock picks"
+    },
+    {
+      "name": "Risk watch",
+      "url": "./index.html#risk",
+      "description": "Picks with penalty flags"
+    }
+  ],
+  "prefer_related_applications": false
+}

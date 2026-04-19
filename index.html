@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0f">
+<title>ProfitPilot — Rule-Based NSE Intelligence</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="description" content="Daily rule-based, backtest-gated NSE stock intelligence. No LLMs, no opinions — just transparent scoring.">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --bg-elev: #13131c;
+    --bg-elev-2: #1a1a26;
+    --border: #23232f;
+    --text: #e6e6ee;
+    --text-dim: #9a9aac;
+    --text-faint: #5e5e74;
+    --accent: #a78bfa;          /* violet */
+    --accent-dim: #6d5ec7;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --chip-bg: #1e1e2b;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 4px 20px rgba(0,0,0,0.4);
+    --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(800px 400px at 20% -10%, rgba(167,139,250,0.08), transparent 60%),
+      radial-gradient(600px 300px at 80% 110%, rgba(109,94,199,0.06), transparent 60%);
+    z-index: 0;
+  }
+  main { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 24px 20px 120px; }
+
+  /* ── Header ─────────────────────────────────────── */
+  header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 20px; margin-bottom: 28px;
+    flex-wrap: wrap;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-mark {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+    display: grid; place-items: center;
+    font-weight: 800; color: #0a0a0f; font-size: 18px;
+  }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.02em; font-weight: 600; }
+  .tagline { font-size: 11px; color: var(--text-faint); margin-top: 2px; font-family: var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
+
+  .meta { text-align: right; font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+  .meta .regime-chip {
+    display: inline-block; padding: 4px 10px; border-radius: 999px;
+    font-weight: 600; letter-spacing: 0.05em; font-size: 10px;
+    text-transform: uppercase;
+  }
+  .regime-BULL     { background: rgba(52,211,153,0.15); color: var(--ok); border: 1px solid rgba(52,211,153,0.3); }
+  .regime-BEAR     { background: rgba(248,113,113,0.15); color: var(--bad); border: 1px solid rgba(248,113,113,0.3); }
+  .regime-SIDEWAYS { background: rgba(251,191,36,0.12); color: var(--warn); border: 1px solid rgba(251,191,36,0.3); }
+
+  .stale-badge {
+    display: inline-block; margin-top: 6px;
+    background: rgba(248,113,113,0.15); color: var(--bad);
+    border: 1px solid rgba(248,113,113,0.3);
+    padding: 4px 8px; border-radius: 6px; font-size: 10px;
+    font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  /* ── Brief card ─────────────────────────────────── */
+  .card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow);
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-dim); margin: 0 0 14px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+  }
+  .brief-headline {
+    font-size: 17px; line-height: 1.5; color: var(--text); font-weight: 500;
+    margin-bottom: 12px;
+  }
+  .brief-insight {
+    font-size: 14px; color: var(--text-dim); line-height: 1.6;
+    padding: 12px 14px; background: var(--bg-elev-2);
+    border-radius: var(--radius-sm); border-left: 3px solid var(--accent);
+  }
+  .brief-action {
+    margin-top: 14px; padding-top: 14px;
+    border-top: 1px dashed var(--border);
+  }
+  .brief-action ol { margin: 0; padding-left: 22px; font-size: 13px; color: var(--text-dim); line-height: 1.8; }
+
+  /* ── Tabs ───────────────────────────────────────── */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    background: transparent; border: none; color: var(--text-faint);
+    padding: 10px 14px; font-size: 13px; font-family: var(--sans);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    white-space: nowrap; transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--text-dim); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .count {
+    font-size: 10px; color: var(--text-faint); margin-left: 4px;
+    font-family: var(--mono);
+  }
+
+  /* ── Pick cards ─────────────────────────────────── */
+  .picks { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 820px) {
+    .picks { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .pick {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    transition: border-color 0.15s, transform 0.15s;
+    cursor: pointer;
+  }
+  .pick:hover { border-color: var(--accent-dim); transform: translateY(-1px); }
+  .pick-head {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 12px; margin-bottom: 10px;
+  }
+  .pick-sym { font-family: var(--mono); font-weight: 700; font-size: 15px; letter-spacing: 0.02em; }
+  .pick-name { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .pick-score {
+    font-family: var(--mono); font-size: 20px; font-weight: 700;
+    color: var(--accent);
+  }
+  .pick-score .slash { color: var(--text-faint); font-size: 12px; font-weight: 400; }
+
+  .tier {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 600; font-family: var(--mono);
+    text-transform: uppercase; letter-spacing: 0.05em; margin-left: 8px;
+  }
+  .tier-HIGH   { background: rgba(52,211,153,0.15); color: var(--ok); }
+  .tier-MEDIUM { background: rgba(251,191,36,0.12); color: var(--warn); }
+  .tier-LOW    { background: rgba(248,113,113,0.15); color: var(--bad); }
+
+  /* ── Chips (the 3 new v3 indicators) ────────────── */
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--chip-bg); color: var(--text-dim);
+    padding: 4px 9px; border-radius: 999px;
+    font-size: 11px; font-family: var(--mono);
+    border: 1px solid var(--border);
+  }
+  .chip .chip-label { color: var(--text-faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .chip .chip-value { color: var(--text); font-weight: 600; }
+  .chip-winrate .chip-value { color: var(--ok); }
+  .chip-canslim .chip-value { color: var(--accent); }
+  .chip-news-pos .chip-value { color: var(--ok); }
+  .chip-news-neg .chip-value { color: var(--bad); }
+  .chip-news-neu .chip-value { color: var(--warn); }
+  .chip-penalty .chip-value { color: var(--bad); }
+
+  .narrative {
+    font-size: 13px; line-height: 1.6; color: var(--text-dim);
+    margin-top: 10px;
+  }
+
+  /* ── Details disclosure ─────────────────────────── */
+  .pick details { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px; }
+  .pick summary {
+    cursor: pointer; font-size: 11px; color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono);
+    list-style: none;
+  }
+  .pick summary::-webkit-details-marker { display: none; }
+  .pick summary::before { content: "▸ "; color: var(--accent); }
+  .pick details[open] summary::before { content: "▾ "; }
+
+  .detail-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px;
+    margin-top: 10px; font-size: 12px;
+  }
+  .detail-grid dt { color: var(--text-faint); font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .detail-grid dd { margin: 0 0 6px 0; color: var(--text); font-family: var(--mono); }
+
+  .headlines { margin-top: 10px; }
+  .headlines li { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; line-height: 1.5; }
+
+  /* ── Sector heatmap ─────────────────────────────── */
+  .sectors { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sector-pill {
+    padding: 6px 10px; background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm); font-size: 12px;
+    display: inline-flex; gap: 6px; align-items: center;
+  }
+  .sector-pill .name { color: var(--text); }
+  .sector-pill .avg { color: var(--accent); font-family: var(--mono); font-weight: 600; }
+  .sector-pill .count { color: var(--text-faint); font-family: var(--mono); font-size: 10px; }
+
+  /* ── Empty / loading ────────────────────────────── */
+  .empty {
+    text-align: center; padding: 60px 20px;
+    color: var(--text-faint);
+  }
+  .loading-spinner {
+    display: inline-block; width: 32px; height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  footer {
+    margin-top: 48px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-faint);
+    font-family: var(--mono); text-align: center; line-height: 1.8;
+  }
+  footer a { color: var(--accent-dim); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+
+  .disclaimer {
+    margin-top: 12px; padding: 10px 14px;
+    background: rgba(251,191,36,0.06);
+    border: 1px solid rgba(251,191,36,0.15);
+    border-radius: var(--radius-sm);
+    font-size: 11px; color: var(--text-dim); line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <div class="logo">
+    <div class="logo-mark">P</div>
+    <div>
+      <h1>ProfitPilot</h1>
+      <div class="tagline">v3 · FinBERT · CANSLIM · Backtest-Gated</div>
+    </div>
+  </div>
+  <div class="meta" id="meta-block">
+    <div id="generated-at">Loading…</div>
+    <div id="regime-chip-holder"></div>
+    <div id="stale-holder"></div>
+  </div>
+</header>
+
+<!-- AI Brief -->
+<section class="card" id="brief-card">
+  <h2>EOD Brief</h2>
+  <div class="brief-headline" id="brief-headline">Loading today's signal…</div>
+  <div class="brief-insight" id="brief-insight"><div class="loading-spinner"></div></div>
+  <div class="brief-action">
+    <h2 style="margin-top:0">Action plan</h2>
+    <ol id="brief-action-list"></ol>
+  </div>
+</section>
+
+<!-- Tabs -->
+<div class="tabs" id="tabs">
+  <button class="tab active" data-view="picks">Picks <span class="count" id="count-picks"></span></button>
+  <button class="tab" data-view="near">Near-misses <span class="count" id="count-near"></span></button>
+  <button class="tab" data-view="risk">Risk watch <span class="count" id="count-risk"></span></button>
+  <button class="tab" data-view="sectors">Sectors</button>
+  <button class="tab" data-view="news">News</button>
+</div>
+
+<section id="view-root">
+  <div class="empty"><div class="loading-spinner"></div></div>
+</section>
+
+<footer>
+  <div>ProfitPilot v3 · Rule-based · Deterministic · Open-source</div>
+  <div class="disclaimer">
+    Educational tool. Not investment advice. All scores are deterministic rule-based outputs.
+    Past backtest performance does not guarantee future returns. Do your own research.
+  </div>
+</footer>
+
+</main>
+
+<script>
+/* ============================================================
+   ProfitPilot v3 frontend — consumes /predictions.json
+   ============================================================ */
+const PREDICTIONS_URL = "predictions.json?v=" + Date.now();
+let STATE = null;
+
+async function load() {
+  try {
+    const r = await fetch(PREDICTIONS_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    STATE = await r.json();
+    render();
+  } catch (e) {
+    document.getElementById("view-root").innerHTML =
+      `<div class="empty">Couldn't load predictions.json — ${e.message}</div>`;
+    document.getElementById("brief-insight").innerHTML =
+      `<div style="color:var(--bad)">Pipeline output unavailable. Check back after the next EOD run.</div>`;
+  }
+}
+
+function render() {
+  renderMeta();
+  renderBrief();
+  renderCounts();
+  renderView("picks");
+  wireTabs();
+}
+
+function renderMeta() {
+  const gen = STATE.generated_at_ist || "";
+  const regime = (STATE.regime && STATE.regime.label) || "SIDEWAYS";
+  const rationale = (STATE.regime && STATE.regime.rationale) || "";
+
+  document.getElementById("generated-at").textContent =
+    gen ? "Last updated " + formatDate(gen) : "";
+
+  document.getElementById("regime-chip-holder").innerHTML =
+    `<span class="regime-chip regime-${regime}" title="${escapeHtml(rationale)}">${regime}</span>`;
+
+  if (STATE._stale) {
+    const why = STATE._stale_reason || "degraded";
+    document.getElementById("stale-holder").innerHTML =
+      `<div class="stale-badge" title="${escapeHtml(why)}">⚠ Stale data</div>`;
+  }
+}
+
+function renderBrief() {
+  const b = STATE.brief || {};
+  document.getElementById("brief-headline").textContent =
+    b.headline || "No summary available.";
+  document.getElementById("brief-insight").textContent =
+    b.key_insight || "";
+
+  const list = document.getElementById("brief-action-list");
+  list.innerHTML = "";
+  (b.action_plan || []).forEach(item => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    list.appendChild(li);
+  });
+}
+
+function renderCounts() {
+  const c = STATE.counts || {};
+  document.getElementById("count-picks").textContent = c.picks ?? "";
+  document.getElementById("count-near").textContent  = c.near_misses ?? "";
+  const riskN = (STATE.picks || []).filter(p =>
+    p.components && p.components.penalties && p.components.penalties.flags
+      && Object.keys(p.components.penalties.flags).length > 0
+  ).length;
+  document.getElementById("count-risk").textContent = riskN || "";
+}
+
+function renderView(view) {
+  const root = document.getElementById("view-root");
+  if (view === "picks")   root.innerHTML = renderPicks(STATE.picks || []);
+  else if (view === "near") root.innerHTML = renderPicks(STATE.near_misses || [], true);
+  else if (view === "risk") root.innerHTML = renderRisk();
+  else if (view === "sectors") root.innerHTML = renderSectors();
+  else if (view === "news") root.innerHTML = renderNews();
+}
+
+function renderPicks(picks, isNear=false) {
+  if (!picks.length) {
+    return `<div class="empty">${isNear ? "No near-misses today." : "No qualifying picks today."}</div>`;
+  }
+  return `<div class="picks">${picks.map(renderPick).join("")}</div>`;
+}
+
+function renderPick(p) {
+  const bd = p.score_breakdown || {};
+  const comps = p.components || {};
+  const tech = comps.technical || {};
+  const canslim = comps.canslim || {};
+  const news = comps.news || {};
+  const penalty = comps.penalties || {};
+  const backtest = comps.backtest || {};
+
+  const newsClass = bd.news >= 60 ? "chip-news-pos" : bd.news <= 40 ? "chip-news-neg" : "chip-news-neu";
+
+  const chips = `
+    <div class="chips">
+      <span class="chip chip-winrate" title="3-year backtest win-rate">
+        <span class="chip-label">Win-rate</span>
+        <span class="chip-value">${(bd.winrate_pct ?? 0).toFixed(0)}%</span>
+      </span>
+      <span class="chip chip-canslim" title="CANSLIM-inspired fundamental score">
+        <span class="chip-label">CANSLIM</span>
+        <span class="chip-value">${(bd.canslim ?? 0).toFixed(0)}</span>
+      </span>
+      <span class="chip ${newsClass}" title="FinBERT news sentiment">
+        <span class="chip-label">News</span>
+        <span class="chip-value">${(bd.news ?? 50).toFixed(0)}</span>
+      </span>
+      <span class="chip" title="Technical composite">
+        <span class="chip-label">Tech</span>
+        <span class="chip-value">${(bd.technical ?? 0).toFixed(0)}</span>
+      </span>
+      ${(bd.penalties ?? 0) < 0 ? `
+      <span class="chip chip-penalty" title="Risk penalty">
+        <span class="chip-label">Risk</span>
+        <span class="chip-value">${(bd.penalties ?? 0).toFixed(0)}</span>
+      </span>` : ""}
+    </div>`;
+
+  const headlines = (news.top_headlines || []).slice(0, 3).map(h =>
+    `<li>• ${escapeHtml(h.title || "")} <span style="color:var(--text-faint)">— ${escapeHtml(h.source || "")}</span></li>`
+  ).join("");
+
+  const perH = backtest.per_horizon_win_rate || {};
+
+  return `
+  <article class="pick">
+    <div class="pick-head">
+      <div>
+        <div class="pick-sym">${escapeHtml(p.symbol)}<span class="tier tier-${p.conviction_tier || 'LOW'}">${p.conviction_tier || 'LOW'}</span></div>
+        <div class="pick-name">${escapeHtml(p.name || "")}</div>
+      </div>
+      <div class="pick-score">${(p.composite_score ?? 0).toFixed(0)}<span class="slash">/100</span></div>
+    </div>
+    ${chips}
+    <div class="narrative">${escapeHtml(p.narrative || "")}</div>
+    <details>
+      <summary>Show breakdown</summary>
+      <dl class="detail-grid">
+        <dt>Backtest 10d</dt><dd>${(perH["10d"] ?? 0).toFixed(0)}%</dd>
+        <dt>Backtest 30d</dt><dd>${(perH["30d"] ?? 0).toFixed(0)}%</dd>
+        <dt>Backtest 60d</dt><dd>${(perH["60d"] ?? 0).toFixed(0)}%</dd>
+        <dt>Regime used</dt><dd>${escapeHtml(p.regime_used || "")}</dd>
+        <dt>News method</dt><dd>${escapeHtml(news.method || "-")}</dd>
+        <dt>Headlines</dt><dd>${news.headline_count ?? 0}</dd>
+      </dl>
+      ${penalty.notes && penalty.notes.length ? `
+        <div style="margin-top:10px;font-size:12px;color:var(--bad)">
+          ⚠ ${penalty.notes.map(escapeHtml).join(" · ")}
+        </div>` : ""}
+      ${headlines ? `<ul class="headlines" style="margin-top:10px;padding-left:0;list-style:none">${headlines}</ul>` : ""}
+    </details>
+  </article>`;
+}
+
+function renderRisk() {
+  const risky = (STATE.picks || []).filter(p => {
+    const f = p.components && p.components.penalties && p.components.penalties.flags;
+    return f && Object.keys(f).length > 0;
+  });
+  if (!risky.length) return `<div class="empty">No picks have penalty flags tripped. Clean slate.</div>`;
+  return `<div class="picks">${risky.map(renderPick).join("")}</div>`;
+}
+
+function renderSectors() {
+  const heat = (STATE.brief && STATE.brief.sector_heatmap) || {};
+  const entries = Object.entries(heat).sort((a, b) => b[1].avg - a[1].avg);
+  if (!entries.length) return `<div class="empty">No sector data available.</div>`;
+  return `<div class="card"><h2>Sector averages</h2><div class="sectors">${
+    entries.map(([name, v]) =>
+      `<div class="sector-pill">
+        <span class="name">${escapeHtml(name)}</span>
+        <span class="avg">${v.avg.toFixed(0)}</span>
+        <span class="count">· ${v.count}</span>
+      </div>`
+    ).join("")
+  }</div></div>`;
+}
+
+function renderNews() {
+  const news = (STATE.brief && STATE.brief.news_highlights) || [];
+  if (!news.length) return `<div class="empty">No high-impact headlines today.</div>`;
+  return `<div class="card"><h2>Top headlines</h2><ul class="headlines" style="padding-left:0;list-style:none">${
+    news.map(h =>
+      `<li style="padding:10px 0;border-bottom:1px solid var(--border)">
+        <div><strong style="font-family:var(--mono);color:${h.sentiment==='positive'?'var(--ok)':'var(--bad)'}">${escapeHtml(h.symbol || "")}</strong> <span style="color:var(--text-faint)">· ${escapeHtml(h.source || "")}</span></div>
+        <div style="margin-top:4px">${escapeHtml(h.title || "")}</div>
+      </li>`
+    ).join("")
+  }</ul></div>`;
+}
+
+function wireTabs() {
+  document.querySelectorAll(".tab").forEach(t => {
+    t.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+      t.classList.add("active");
+      renderView(t.dataset.view);
+    });
+  });
+}
+
+function formatDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  } catch { return iso; }
+}
+
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+// Kick off
+load();
+
+// Service worker
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>

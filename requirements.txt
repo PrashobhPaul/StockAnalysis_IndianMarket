@@ -1,0 +1,25 @@
+# ───── Core data + HTTP ─────────────────────────────────────────
+# Pin modern yfinance — anything <0.2.50 breaks on Yahoo's 2025 bot detection.
+yfinance>=0.2.50
+# curl_cffi is NOT optional: NSE/BSE endpoints and Yahoo both require
+# Chrome TLS fingerprinting to return non-empty bodies.
+curl_cffi>=0.7.0
+requests>=2.31.0
+pandas>=2.1.0
+numpy>=1.26.0
+pyarrow>=14.0.0          # parquet cache for OHLCV
+pytz>=2024.1
+PyYAML>=6.0.1
+feedparser>=6.0.11
+tenacity>=8.2.3          # bounded retry for flaky upstreams
+
+# ───── FinBERT (CPU) ────────────────────────────────────────────
+# torch CPU wheel is ~200MB; transformers pulls tokenizers + safetensors.
+# batch_size=16 / max_length=256 / device=-1 → ~1.5 GB RSS, fits in 7GB runner.
+torch>=2.2.0
+transformers>=4.40.0
+safetensors>=0.4.0
+
+# ───── CANSLIM / fundamentals ───────────────────────────────────
+# Optional NSE fallback — nselib works without login; guarded by import.
+nselib>=3.0.0; python_version >= "3.10"

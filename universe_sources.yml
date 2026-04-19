@@ -1,0 +1,155 @@
+# ─────────────────────────────────────────────────────────────────
+# ProfitPilot v3 — Universe Sources
+# ─────────────────────────────────────────────────────────────────
+# Priority chain (first success wins, subsequent sources skipped):
+#   1. niftyindices.com CSV     — authoritative primary source
+#   2. nselib (upstox fork)     — library fallback if CSV fetch fails
+#   3. static seed list         — last-resort offline fallback
+#
+# All HTTP fetches go through curl_cffi with Chrome impersonation —
+# NSE will return a TLS fingerprint block otherwise.
+
+# Index CSVs served by nseindia/niftyindices. Each file lists the
+# constituents of the index (symbol, company name, ISIN, industry).
+csv_sources:
+  - index: "NIFTY 500"
+    url: "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+  - index: "BSE 500"
+    url: "https://api.bseindia.com/BseIndiaAPI/api/LargeCapitalisation/w?Index=17&scripcode=&industry=&segment=Equity"
+    format: "bse_json"
+  - index: "NIFTY SMALLCAP 250"
+    url: "https://niftyindices.com/IndexConstituent/ind_niftysmallcap250list.csv"
+
+# If all CSV sources fail, try nselib.
+# nselib.capital_market.nse_equity_list() returns a DataFrame of ~2000 symbols;
+# we post-filter to the three indices above by market-cap tier.
+nselib_fallback:
+  enabled: true
+  # Post-filter thresholds applied to nselib output
+  min_market_cap_crore: 500   # ₹500 cr floor
+  max_market_cap_crore: 500000
+
+# Quality filters applied AFTER universe is loaded.
+# These are intentionally generous — we're looking to exclude obviously
+# broken tickers, not to hand-pick stocks. The rule engine does selection.
+quality_filters:
+  min_market_cap_crore: 500        # micro-caps are too illiquid for our fills
+  max_debt_to_equity: 3.0          # >300% D/E is usually a red flag
+  require_positive_net_profit_ttm: true
+  # Yahoo symbol suffixes we'll try, in order. If none resolve, drop ticker.
+  yahoo_suffixes: [".NS", ".BO"]
+
+# Static fallback — copy of a recent NIFTY 500 snapshot (~100 core names).
+# Used only when both CSV and nselib paths fail. Kept intentionally short;
+# a minimal book beats no book.
+static_seed:
+  - RELIANCE
+  - TCS
+  - HDFCBANK
+  - INFY
+  - ICICIBANK
+  - HINDUNILVR
+  - ITC
+  - SBIN
+  - BHARTIARTL
+  - KOTAKBANK
+  - LT
+  - HCLTECH
+  - AXISBANK
+  - BAJFINANCE
+  - ASIANPAINT
+  - MARUTI
+  - TITAN
+  - SUNPHARMA
+  - WIPRO
+  - NESTLEIND
+  - ULTRACEMCO
+  - ADANIPORTS
+  - POWERGRID
+  - NTPC
+  - ONGC
+  - JSWSTEEL
+  - TATASTEEL
+  - TATAMOTORS
+  - M&M
+  - BAJAJFINSV
+  - HDFCLIFE
+  - TECHM
+  - DRREDDY
+  - CIPLA
+  - DIVISLAB
+  - GRASIM
+  - COALINDIA
+  - BPCL
+  - BRITANNIA
+  - EICHERMOT
+  - HEROMOTOCO
+  - BAJAJ-AUTO
+  - INDUSINDBK
+  - SBILIFE
+  - ICICIPRULI
+  - TRENT
+  - APOLLOHOSP
+  - TATACONSUM
+  - LTIM
+  - PERSISTENT
+  - COFORGE
+  - PIDILITIND
+  - HAVELLS
+  - POLYCAB
+  - DIXON
+  - HAL
+  - BEL
+  - PFC
+  - RECLTD
+  - MUTHOOTFIN
+  - CHOLAFIN
+  - BANKBARODA
+  - FEDERALBNK
+  - IDFCFIRSTB
+  - DABUR
+  - MARICO
+  - GODREJCP
+  - COLPAL
+  - AMBUJACEM
+  - ACC
+  - BERGEPAINT
+  - AUROPHARMA
+  - LUPIN
+  - NAUKRI
+  - IRCTC
+  - ZOMATO
+  - DMART
+  - TATAELXSI
+  - KPITTECH
+  - HINDALCO
+  - VEDL
+  - SHREECEM
+  - TATAPOWER
+  - JSWENERGY
+  - NHPC
+  - SUZLON
+  - IREDA
+  - SIEMENS
+  - ABB
+  - CUMMINSIND
+  - BOSCHLTD
+  - SRF
+  - DEEPAKNTR
+  - UPL
+  - PIIND
+  - COROMANDEL
+  - TVSMOTOR
+  - ASHOKLEY
+  - ESCORTS
+  - MOTHERSON
+  - MFSL
+
+# Source-of-truth for HTTP headers / User-Agent. curl_cffi's
+# impersonate="chrome" handles TLS fingerprint, but the request still needs
+# plausible headers or niftyindices returns a redirect loop.
+http:
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  accept: "text/csv,application/json,text/plain,*/*"
+  accept_language: "en-US,en;q=0.9"
+  timeout_seconds: 15

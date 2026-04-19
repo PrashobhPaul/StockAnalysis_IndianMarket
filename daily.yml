@@ -1,0 +1,144 @@
+name: "📈 ProfitPilot v3 Daily Pipeline"
+
+# Why 4 cron slots instead of 1:
+#   Yahoo + NSE are flaky free upstreams. We run 4 times so one failure
+#   doesn't leave the app stale for 24h. Preserve-last-good in api/daily.py
+#   means a single success per window is enough, and cron locks prevent races.
+#
+# Times (UTC → IST):
+#   10:15 UTC = 15:45 IST   pre-close pulse
+#   10:45 UTC = 16:15 IST   main EOD run
+#   12:30 UTC = 18:00 IST   post-close safety retry
+#   02:00 UTC = 07:30 IST   morning fallback (Tue–Sat, covers yesterday)
+on:
+  schedule:
+    - cron: "15 10 * * 1-5"
+    - cron: "45 10 * * 1-5"
+    - cron: "30 12 * * 1-5"
+    - cron: "0 2 * * 2-6"
+  workflow_dispatch:
+
+concurrency:
+  group: profitpilot-daily
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    name: "Universe → Score → Backtest → Publish"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+
+    env:
+      # Keep FinBERT weights inside the repo's cache dir so actions/cache@v4
+      # can persist them across runs without a custom path mapping.
+      HF_HOME: ${{ github.workspace }}/.cache/huggingface
+      TRANSFORMERS_CACHE: ${{ github.workspace }}/.cache/huggingface
+      # Disable HF telemetry and tokenizers parallelism warnings
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      # Python defaults
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # FinBERT weights (~440 MB) change rarely — cache keyed on model id.
+      # Saves ~2 min per run after the first.
+      - name: Cache FinBERT weights
+        uses: actions/cache@v4
+        with:
+          path: .cache/huggingface
+          key: finbert-v1-${{ runner.os }}-prosusai
+          restore-keys: |
+            finbert-v1-${{ runner.os }}-
+
+      # 3 years of OHLCV for ~750 tickers = ~60 MB parquet. Cache keyed on
+      # today's UTC date so we rebuild once per day but reuse across the 4
+      # cron slots on the same day.
+      - name: Cache OHLCV parquet
+        uses: actions/cache@v4
+        with:
+          path: .cache/ohlcv
+          key: ohlcv-${{ runner.os }}-${{ hashFiles('config/universe_sources.yml') }}-${{ github.run_id }}
+          restore-keys: |
+            ohlcv-${{ runner.os }}-${{ hashFiles('config/universe_sources.yml') }}-
+
+      - name: Run pipeline (with one retry on empty result)
+        run: |
+          set +e
+          python -m api.daily
+          STOCKS=$(python -c "import json; print(json.load(open('predictions.json')).get('stocks_analyzed', 0))" 2>/dev/null || echo 0)
+          STALE=$(python -c "import json; print(1 if json.load(open('predictions.json')).get('_stale') else 0)" 2>/dev/null || echo 0)
+          if [ "$STOCKS" = "0" ] || [ "$STALE" = "1" ]; then
+            echo "::warning::First attempt produced stale/empty output (stocks=$STOCKS, stale=$STALE). Retrying in 45s…"
+            sleep 45
+            python -m api.daily
+          fi
+          # Never fail the job on a data issue — preserve-last-good handles it.
+          exit 0
+
+      - name: Commit artifacts
+        run: |
+          git config --global user.name  "profitpilot-bot"
+          git config --global user.email "bot@profitpilot.local"
+          git add predictions.json news_cache.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            IST=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')
+            STALE=$(python -c "import json; print('STALE' if json.load(open('predictions.json')).get('_stale') else 'FRESH')" 2>/dev/null || echo "UNKNOWN")
+            git commit -m "📈 [$STALE] predictions + news — ${IST}"
+            git push
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 📈 ProfitPilot v3 Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(summary unavailable)"
+          import json, os
+          try:
+              with open("predictions.json") as f:
+                  d = json.load(f)
+          except Exception as e:
+              print(f"Could not read predictions.json: {e}"); raise SystemExit
+          stale = d.get("_stale", False)
+          regime = d.get("regime", {})
+          brief = d.get("daily_brief", {})
+          print("⚠️ **STALE** — preserved last good run" if stale else "✅ **FRESH**")
+          print(f"- **Market date:** {d.get('market_date','?')}")
+          print(f"- **Engine:** {d.get('engine','?')}")
+          print(f"- **Universe size:** {d.get('universe_size','?')}")
+          print(f"- **Stocks analyzed:** {d.get('stocks_analyzed','?')}")
+          print(f"- **Regime:** {regime.get('label','?')} · {regime.get('notes','')}")
+          print(f"- **Headline:** {brief.get('headline','—')}")
+          for cat, label in [("short_term","⚡ Short"),("medium_term","📈 Medium"),("long_term","🏛 Long")]:
+              picks = d.get(cat, {}).get("picks", []) or []
+              if not picks: continue
+              print(f"\n### {label} Term ({len(picks)})")
+              print("| # | Symbol | Final | Tech | CANSLIM | News | Win % |")
+              print("|---|--------|-------|------|---------|------|-------|")
+              for p in picks[:5]:
+                  b = p.get("score_breakdown") or {}
+                  print(f"| {p.get('rank','?')} | **{p.get('symbol','?')}** | "
+                        f"{p.get('score','?')} | {b.get('technical','—')} | "
+                        f"{b.get('canslim','—')} | {b.get('news','—')} | "
+                        f"{p.get('backtest_winrate_pct','—')} |")
+          PY
