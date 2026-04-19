@@ -21,8 +21,18 @@ Stages (each independently degrades; a single stage failing does not abort):
 
 Preserve-last-good: if universe build returns 0 tickers OR total failure
 across >=50% of tickers, we load the previous predictions.json, mark
-`_stale: true`, bump the generated_at, and exit 0. This keeps the static
-GitHub Pages dashboard showing yesterday's data rather than a blank page.
+`_stale: true`, bump the generated_at, and exit 0.
+
+FIXES (2026-04 debug pass):
+  - F1: `build_universe()` returns a DataFrame; we now convert to records
+        before iterating. Previous `if not universe:` raised ValueError on
+        DataFrame truthiness → silent fall-through to last-good every run.
+  - F2: `_score_one_ticker` used wrong field names ("display_symbol", "name").
+        Real columns from universe_builder are "symbol", "company".
+        Fixed so news RSS queries use the actual company name.
+  - F3: `_preserve_last_good` now writes a traceback to _last_failure.log
+        so regressions are debuggable from the repo itself (not just
+        Actions logs, which rotate).
 """
 from __future__ import annotations
 
@@ -58,11 +68,25 @@ log = get_logger("orchestrator")
 
 PREDICTIONS_PATH = REPO_ROOT / "predictions.json"
 NEWS_CACHE_PATH = REPO_ROOT / "news_cache.json"
+FAILURE_LOG_PATH = REPO_ROOT / "_last_failure.log"
 
 # Tuning knobs — exposed here so a bad day's run can be reproduced
 MAX_UNIVERSE_SIZE = 500       # cap — we don't need all 1250 in the index CSVs
 SCORING_WORKERS = 4           # per-ticker tech+oneil+penalty is IO-light; 4 is safe
 WRITE_FAILURE_RATE_CAP = 0.5  # if ≥50% tickers fail scoring, preserve last-good
+
+
+def _clean(v: Any) -> str:
+    """Coerce a cell value (which may be pandas NaN) to a clean string.
+    pandas NaN is truthy, so the usual `x or fallback` idiom breaks on
+    columns that DataFrame.to_dict() serializes with NaN in place of None.
+    """
+    if v is None:
+        return ""
+    # Detect NaN without importing numpy
+    if isinstance(v, float) and v != v:
+        return ""
+    return str(v).strip()
 
 
 def _load_last_good() -> dict[str, Any] | None:
@@ -77,6 +101,23 @@ def _load_last_good() -> dict[str, Any] | None:
         return None
 
 
+def _write_failure_log(reason: str, tb: str = "") -> None:
+    """Dump traceback to a repo file so we can diagnose regressions post-hoc.
+
+    Actions logs rotate after ~90 days; committing this file from CI means the
+    stack trace survives with the failing run.
+    """
+    try:
+        FAILURE_LOG_PATH.write_text(
+            f"timestamp_ist: {datetime.now(IST).isoformat()}\n"
+            f"reason: {reason}\n"
+            f"---\n{tb or '(no traceback captured)'}\n",
+            encoding="utf-8",
+        )
+    except Exception as e:
+        log.warning("Could not write failure log: %s", e)
+
+
 def _score_one_ticker(
     tk: dict[str, Any],
     ohlcv_map: dict,
@@ -86,6 +127,10 @@ def _score_one_ticker(
     """
     Run tech + oneil + penalty for a single ticker. Returns component dict
     or None on total failure. News + backtest are handled elsewhere (bulk).
+
+    tk is a dict derived from universe_builder.build_universe() via .to_dict("records").
+    Real column names: symbol, company, industry, source_index, yahoo_ticker,
+    market_cap_crore, debt_to_equity, profit_ttm_crore, sector.
     """
     try:
         import yfinance as yf
@@ -93,9 +138,13 @@ def _score_one_ticker(
         log.error("yfinance unavailable: %s", e)
         return None
 
-    display = tk.get("display_symbol") or tk.get("yahoo_ticker") or tk["symbol"]
-    yahoo = tk.get("yahoo_ticker") or f"{tk['symbol']}.NS"
-    name = tk.get("name") or display
+    # F2: use actual universe_builder column names. _clean() handles NaN
+    # (pandas coerces None → NaN in mixed-type columns).
+    display = _clean(tk.get("symbol"))
+    if not display:
+        return None
+    yahoo = _clean(tk.get("yahoo_ticker")) or f"{display}.NS"
+    name = _clean(tk.get("company")) or display
 
     df = ohlcv_map.get(yahoo)
     try:
@@ -121,12 +170,15 @@ def _score_one_ticker(
         log.warning("penalty failed %s: %s", display, e)
         pen = None
 
+    # Prefer sector from universe_builder; fall back to industry from CSV
+    sector = _clean(tk.get("sector")) or _clean(tk.get("industry"))
+
     return {
         "display": display,
         "yahoo": yahoo,
         "name": name,
-        "sector": tk.get("sector"),
-        "industry": tk.get("industry"),
+        "sector": sector,
+        "industry": _clean(tk.get("industry")),
         "tech": tech,
         "oneil": oneil,
         "penalty": pen,
@@ -139,22 +191,39 @@ def run_pipeline() -> int:
     log.info("=== ProfitPilot v3 daily pipeline: START ===")
 
     # ── Stage 1: universe ────────────────────────────────────────────
+    # F1: build_universe returns a DataFrame, NOT list[dict].
     try:
-        universe = build_universe()
+        universe_df = build_universe()
     except Exception as e:
         log.error("universe build threw: %s\n%s", e, traceback.format_exc())
-        universe = []
+        return _preserve_last_good("universe_build_exception", traceback.format_exc())
 
-    if not universe:
+    if universe_df is None or universe_df.empty:
         log.error("Empty universe — preserving last-good")
         return _preserve_last_good("empty_universe")
 
-    if len(universe) > MAX_UNIVERSE_SIZE:
-        log.info("Capping universe %d → %d", len(universe), MAX_UNIVERSE_SIZE)
-        universe = universe[:MAX_UNIVERSE_SIZE]
+    if len(universe_df) > MAX_UNIVERSE_SIZE:
+        log.info("Capping universe %d → %d", len(universe_df), MAX_UNIVERSE_SIZE)
+        universe_df = universe_df.head(MAX_UNIVERSE_SIZE).copy()
 
-    yahoo_tickers = [u.get("yahoo_ticker") or f"{u['symbol']}.NS" for u in universe]
+    # Convert to records AFTER capping so we keep the DataFrame API upstream
+    universe = universe_df.to_dict(orient="records")
+
+    # Build yahoo tickers with NaN-safe cleaning, drop malformed rows atomically
+    clean_pairs: list[tuple[dict[str, Any], str]] = []
+    for u in universe:
+        sym = _clean(u.get("symbol"))
+        if not sym:
+            continue
+        yt = _clean(u.get("yahoo_ticker")) or f"{sym}.NS"
+        clean_pairs.append((u, yt))
+
+    universe = [u for u, _ in clean_pairs]
+    yahoo_tickers = [y for _, y in clean_pairs]
     log.info("Universe size: %d", len(yahoo_tickers))
+
+    if not yahoo_tickers:
+        return _preserve_last_good("no_valid_yahoo_tickers")
 
     # ── Stage 2: regime ──────────────────────────────────────────────
     regime = detect_regime()
@@ -172,7 +241,9 @@ def run_pipeline() -> int:
     log.info("OHLCV obtained for %d/%d tickers", got_count, len(yahoo_tickers))
     if got_count < len(yahoo_tickers) * (1 - WRITE_FAILURE_RATE_CAP):
         log.error("Too many OHLCV failures — preserving last-good")
-        return _preserve_last_good("ohlcv_fetch_failure")
+        return _preserve_last_good(
+            f"ohlcv_fetch_failure ({got_count}/{len(yahoo_tickers)})"
+        )
 
     # ── Stage 4: backtest ────────────────────────────────────────────
     log.info("Running 3y walk-forward backtest")
@@ -201,10 +272,12 @@ def run_pipeline() -> int:
 
     if len(ticker_components) < len(universe) * (1 - WRITE_FAILURE_RATE_CAP):
         log.error("Too many scoring failures — preserving last-good")
-        return _preserve_last_good("scoring_failure")
+        return _preserve_last_good(
+            f"scoring_failure ({len(ticker_components)}/{len(universe)})"
+        )
 
     # ── News / FinBERT ───────────────────────────────────────────────
-    log.info("Running FinBERT news scoring")
+    log.info("Running FinBERT news scoring over %d tickers", len(ticker_components))
     news_inputs = [
         (comp["display"], comp["name"])
         for comp in ticker_components.values()
@@ -294,16 +367,27 @@ def run_pipeline() -> int:
     atomic_write_json(PREDICTIONS_PATH, predictions)
     atomic_write_json(NEWS_CACHE_PATH, news_cache)
 
+    # Clear stale failure log on successful run
+    try:
+        if FAILURE_LOG_PATH.exists():
+            FAILURE_LOG_PATH.unlink()
+    except Exception:
+        pass
+
     log.info("=== Pipeline DONE in %.1fs — wrote %s and %s ===",
              time.time() - start, PREDICTIONS_PATH.name, NEWS_CACHE_PATH.name)
     return 0
 
 
-def _preserve_last_good(reason: str) -> int:
+def _preserve_last_good(reason: str, tb: str = "") -> int:
     """
     Write last-good predictions with _stale=true and refreshed timestamp.
-    Return 0 so GitHub Actions job doesn't red-X on known-degraded days.
+    Also dumps a failure log so we can see the stack trace post-mortem.
+
+    Returns 0 so GitHub Actions doesn't red-X on known-degraded days.
     """
+    _write_failure_log(reason, tb)
+
     last = _load_last_good()
     if last is None:
         log.error("No last-good predictions file exists. Emitting minimal stub.")
@@ -337,6 +421,10 @@ if __name__ == "__main__":
     try:
         sys.exit(run_pipeline())
     except Exception as e:
-        log.error("Unhandled exception in pipeline: %s\n%s", e, traceback.format_exc())
+        tb = traceback.format_exc()
+        log.error("Unhandled exception in pipeline: %s\n%s", e, tb)
         # Even on catastrophic failure, try to preserve last-good
-        sys.exit(_preserve_last_good(f"unhandled_exception: {type(e).__name__}"))
+        sys.exit(_preserve_last_good(
+            f"unhandled_exception: {type(e).__name__}: {e}",
+            tb,
+        ))
