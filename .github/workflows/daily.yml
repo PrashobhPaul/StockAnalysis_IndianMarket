@@ -62,7 +62,9 @@ jobs:
         run: |
           git config --global user.name "profitpilot-bot"
           git config --global user.email "bot@profitpilot.local"
-          git add predictions.json news_cache.json 2>/dev/null || true
+          # Stage both success outputs AND the failure log so regressions
+          # leave a stack trace in the repo (Actions logs rotate after 90d)
+          git add predictions.json news_cache.json _last_failure.log 2>/dev/null || true
           if ! git diff --staged --quiet; then
             IST=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')
             git commit -m "📈 predictions — ${IST}"
@@ -73,6 +75,12 @@ jobs:
         if: always()
         run: |
           echo "## 📈 ProfitPilot v3 Run Summary" >> $GITHUB_STEP_SUMMARY
+          if [ -f _last_failure.log ]; then
+            echo "### ⚠️ Failure log present" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -60 _last_failure.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
           if [ -f predictions.json ]; then
             python - <<'PY' >> $GITHUB_STEP_SUMMARY
 import json
@@ -83,11 +91,13 @@ picks = d.get("picks", [])
 print("⚠️ **STALE**" if stale else "✅ **FRESH**")
 print(f"- **Generated:** {d.get('generated_at_ist','?')}")
 print(f"- **Picks:** {counts.get('picks','?')} | Near-misses: {counts.get('near_misses','?')}")
+if stale:
+    print(f"- **Stale reason:** `{d.get('_stale_reason','unknown')}`")
 if picks:
   print(f"\n### Top 3 Picks")
   for i, p in enumerate(picks[:3], 1):
-    print(f"{i}. **{p.get('symbol','?')}** — Score: {p.get('score','?')} | Win%: {p.get('backtest_winrate_pct','—')}")
+    print(f"{i}. **{p.get('symbol','?')}** — Score: {p.get('composite_score','?')} | Win%: {p.get('score_breakdown',{}).get('winrate_pct','—')}")
 PY
           else
-            echo "❌ predictions.json not found — pipeline may have failed"
+            echo "❌ predictions.json not found — pipeline may have failed" >> $GITHUB_STEP_SUMMARY
           fi
