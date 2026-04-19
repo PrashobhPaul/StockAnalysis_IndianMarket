@@ -190,7 +190,7 @@ Assuming your GitHub Pages repo is already set up at `prashobhpaul/ProfitPilot`:
 
 6. **Verify GitHub Pages**
    - Settings → Pages → Source: `main` branch, root (`/`)
-   - Visit https://prashobhpaul.github.io/ProfitPilot/
+   - Visit https://prashobhpaul.github.io/StockAnalysis_IndianMarket/
    - Check that the regime chip loads, brief populates, picks render with the three new chips
 
 7. **Monitor the first scheduled run**
