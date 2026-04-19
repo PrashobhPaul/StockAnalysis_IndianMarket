@@ -1,31 +1,16 @@
 # ProfitPilot v3
 
-**Rule-based, backtest-gated NSE stock intelligence. No LLMs in the scoring loop.**
+**Indian Stock Market Analysis with backtest-gated NSE stock intelligence.**
 
 Daily pipeline that scores the NIFTY 500 / BSE 500 / SMALLCAP 250 universe across four independent lenses — technical, fundamental (CANSLIM-inspired), news sentiment (FinBERT), and a 3-year walk-forward backtest — then publishes picks to a static GitHub Pages PWA.
 
-- **Live dashboard:** https://prashobhpaul.github.io/ProfitPilot/
+- **Live dashboard:** https://prashobhpaul.github.io/StockAnalysis_IndianMarket/
 - **Pipeline runs:** 4× daily via GitHub Actions (pre-market, mid-day, EOD, post-close)
 - **Output:** static `predictions.json` + `news_cache.json` consumed by an offline-capable PWA
-
----
-
-## Why v3 exists
-
-v2 scored stocks and published picks. It had two structural problems:
-
-1. **No validation.** A high technical score didn't mean the signal had ever worked on that stock. Every name was treated as equally responsive to the same rules.
-2. **Optional LLM drift.** The "AI Brief" had a Gemini path that was removed after it produced inconsistent outputs. v3 enforces that the scoring + brief layer is 100% deterministic.
-
-v3 addresses both:
-
 - **60% backtest gate.** Every picked stock must have achieved its forward-return targets ≥60% of the time across the last 3 years of its own history. Stocks whose signals never worked get filtered out regardless of how good today's chart looks.
 - **FinBERT for news only.** The one ML component is sentiment classification of news headlines — a well-scoped, reproducible classification task. It does not influence rankings beyond a weighted sub-score, and if transformers/torch fail to load, the pipeline degrades to rule-based keyword sentiment without crashing.
-
 ---
-
 ## Architecture
-
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ GitHub Actions (daily.yml)                                       │
@@ -88,7 +73,7 @@ v3 addresses both:
 
 Single-file PWA (`index.html`) consuming `predictions.json`. Obsidian dark aesthetic with violet accents. Five tabs: Picks, Near-misses, Risk watch, Sectors, News.
 
-**v3-specific UI additions** (per spec): three chips per pick card —
+**3-specific UI additions** (per spec): three chips per pick card —
 
 - **Win-rate** — 3-year backtest hit-rate (green)
 - **CANSLIM** — fundamental sub-score (violet)
@@ -274,14 +259,11 @@ The frontend renders a `⚠ Stale data` badge whenever `_stale=true`.
 
 ## Disclaimer
 
-**This is an educational tool, not investment advice.**
-
-- All scores are deterministic rule-based outputs. There is no recommendation engine, no personalized advice, no portfolio management.
+**This is just an evaluation tool, not an investment advice.**
 - Past backtest performance does not guarantee future returns. The 60% historical win-rate gate is a filter, not a prediction.
 - The FinBERT sentiment layer classifies headline text. It does not know if the headline is factually correct, whether the event is priced in, or how the broader market will react.
 - Market data may be delayed, incomplete, or incorrect. Always verify critical data from primary sources (exchange filings, company announcements) before making any decision.
 - The author is not a registered investment advisor. Use at your own risk. Do your own research.
-
 ---
 
 ## License & credits
