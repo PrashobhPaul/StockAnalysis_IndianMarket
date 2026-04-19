@@ -7,15 +7,27 @@ Priority chain (first success wins):
     3. nselib.capital_market  (upstox-maintained fallback library)
     4. Static seed list from config (last resort, always works)
 
-Post-filter:
-    - Market cap between [min_crore, max_crore]
-    - Debt/Equity ≤ max
-    - Trailing-twelve-month net profit > 0 (skipped if flag off)
-    - Yahoo symbol resolvable under one of the suffixes in config
+Post-processing:
+    - Deduplicate by symbol
+    - Assign default Yahoo suffix (.NS); dead tickers get filtered out
+      naturally by the downstream OHLCV fetch stage
+    - NO per-ticker fundamentals/market-cap calls — oneil_scorer does
+      this work anyway with its own yfinance.Ticker, parallelized across
+      4 workers; doing it twice just burned the Yahoo rate limit and
+      pushed total runtime past the 40-min budget.
 
 Output: DataFrame with columns
-    symbol, company, source_index, yahoo_ticker, market_cap_crore,
-    debt_to_equity, profit_ttm_crore
+    symbol, company, industry, source_index, yahoo_ticker, sector
+
+FIXES (2026-04 debug pass):
+  - UNI-F1: Removed serial per-ticker yfinance `.info` + `_resolve_yahoo_ticker`
+    calls from Phase 4. Was taking 15-30 min for 1250 rows, frequently
+    tripping the workflow timeout or exhausting Yahoo rate limits before
+    the OHLCV fetch could even start. Dead tickers are now filtered
+    downstream where the batch-download mechanism already handles them.
+  - UNI-F2: Still populates `market_cap_crore`, `debt_to_equity`,
+    `profit_ttm_crore` as None so the DataFrame schema stays stable
+    for any downstream consumers that expect those columns.
 """
 from __future__ import annotations
 
@@ -30,7 +42,6 @@ from pipeline.utils import (
     chrome_session,
     get_logger,
     http_get,
-    safe_float,
 )
 
 log = get_logger("universe_builder")
@@ -127,74 +138,15 @@ def _nselib_fallback() -> list[dict]:
         return []
 
 
-def _resolve_yahoo_ticker(symbol: str, suffixes: list[str]) -> str | None:
-    """
-    Try each suffix and return the first one yfinance resolves. We only check
-    that .info returns a non-empty dict — a full history fetch would be too
-    slow for 750 symbols. Real validation happens downstream.
-    """
-    import yfinance as yf
-    for sfx in suffixes:
-        candidate = f"{symbol}{sfx}"
-        try:
-            tk = yf.Ticker(candidate)
-            info = tk.fast_info
-            # fast_info raises on unknown tickers and is cheap.
-            if info is not None and getattr(info, "last_price", None):
-                return candidate
-        except Exception:
-            continue
-    return None
-
-
-def _fundamentals(ticker: str) -> dict[str, Any]:
-    """
-    Pull market-cap, debt/equity, TTM net profit via yfinance.
-    Best-effort: every field can come back None; callers must handle that.
-    """
-    import yfinance as yf
-    try:
-        tk = yf.Ticker(ticker)
-        info = tk.info or {}
-        mcap = info.get("marketCap")  # INR
-        de = info.get("debtToEquity")  # percentage per yfinance
-        # yfinance returns debtToEquity as a PERCENT (e.g. 42.5 means 0.425).
-        # Normalize so callers can compare against the 3.0 cap meaningfully.
-        de_normalized = safe_float(de) / 100.0 if de is not None else None
-
-        # Earnings — yfinance removed `quarterly_earnings` in 0.2.50.
-        # Use quarterly_income_stmt for TTM net income; fall back to info.
-        ttm_net = None
-        try:
-            qi = tk.quarterly_income_stmt
-            if qi is not None and not qi.empty and "Net Income" in qi.index:
-                # Sum last 4 quarters
-                ttm_net = float(qi.loc["Net Income"].iloc[:4].sum())
-        except Exception:
-            pass
-        if ttm_net is None:
-            ttm_net = safe_float(info.get("netIncomeToCommon"), default=0.0)
-
-        return {
-            "market_cap_crore": safe_float(mcap) / 1e7 if mcap else None,  # 1 cr = 1e7
-            "debt_to_equity": de_normalized,
-            "profit_ttm_crore": ttm_net / 1e7 if ttm_net else None,
-            "sector": info.get("sector") or info.get("industry") or "",
-        }
-    except Exception as e:
-        log.debug("fundamentals failed for %s: %s", ticker, e)
-        return {
-            "market_cap_crore": None,
-            "debt_to_equity": None,
-            "profit_ttm_crore": None,
-            "sector": "",
-        }
-
-
 def build_universe() -> pd.DataFrame:
     """
     Assemble the full universe DataFrame. Never raises — returns an empty
     DataFrame if every source fails.
+
+    UNI-F1: Phase 4 is now a fast pure-Python pass (no network I/O). Dead
+    tickers get filtered naturally by the downstream OHLCV batch fetch
+    (which is already parallelized + parquet-cached). Missing fundamentals
+    are recomputed by oneil_scorer.
     """
     cfg = _load_config()
     session = chrome_session()
@@ -215,6 +167,7 @@ def build_universe() -> pd.DataFrame:
         for r in got:
             r["source_index"] = index_name
         rows.extend(got)
+        log.info("  → got %d rows from %s", len(got), index_name)
 
     # Phase 2: nselib fallback if phase 1 was thin
     if len(rows) < 100 and cfg.get("nselib_fallback", {}).get("enabled"):
@@ -242,45 +195,30 @@ def build_universe() -> pd.DataFrame:
     df = pd.DataFrame(rows).drop_duplicates(subset=["symbol"]).reset_index(drop=True)
     log.info("universe pre-filter: %d unique symbols", len(df))
 
-    # Phase 4: Yahoo resolution + fundamentals + filter
-    filters = cfg.get("quality_filters", {}) or {}
-    suffixes = filters.get("yahoo_suffixes", [".NS", ".BO"])
-    min_mcap = float(filters.get("min_market_cap_crore", 0))
-    max_mcap = float(filters.get("max_market_cap_crore", 1e18))
-    max_de = float(filters.get("max_debt_to_equity", 1e9))
-    need_profit = bool(filters.get("require_positive_net_profit_ttm", False))
+    # Phase 4 (UNI-F1): fast local expansion. No per-ticker network calls.
+    # Dead tickers are weeded out naturally by the OHLCV batch fetch later.
+    cfg_filters = cfg.get("quality_filters", {}) or {}
+    suffixes = cfg_filters.get("yahoo_suffixes", [".NS", ".BO"])
+    default_suffix = suffixes[0] if suffixes else ".NS"
 
-    keep: list[dict] = []
+    keep: list[dict[str, Any]] = []
     for _, r in df.iterrows():
-        sym = r["symbol"]
-        yticker = _resolve_yahoo_ticker(sym, suffixes)
-        if not yticker:
+        sym = str(r["symbol"]).strip().upper()
+        if not sym or not sym.replace("&", "").replace("-", "").replace(".", "").isalnum():
+            # Skip obviously malformed symbols (keep '&', '-', '.' which appear
+            # in legitimate NSE tickers like 'M&M', 'BAJAJ-AUTO', 'MRF.NS')
             continue
-        f = _fundamentals(yticker)
-        mcap = f.get("market_cap_crore")
-        de = f.get("debt_to_equity")
-        pft = f.get("profit_ttm_crore")
-
-        # Apply filters permissively — missing data is NOT an auto-reject,
-        # because yfinance is notoriously sparse for small caps. Only reject
-        # when we have a value AND it's outside the band.
-        if mcap is not None and (mcap < min_mcap or mcap > max_mcap):
-            continue
-        if de is not None and de > max_de:
-            continue
-        if need_profit and pft is not None and pft <= 0:
-            continue
-
         keep.append({
             "symbol": sym,
-            "company": r.get("company", ""),
-            "industry": r.get("industry", "") or f.get("sector", ""),
+            "company": (r.get("company") or "").strip(),
+            "industry": (r.get("industry") or "").strip(),
             "source_index": r.get("source_index", ""),
-            "yahoo_ticker": yticker,
-            "market_cap_crore": mcap,
-            "debt_to_equity": de,
-            "profit_ttm_crore": pft,
-            "sector": f.get("sector", ""),
+            "yahoo_ticker": f"{sym}{default_suffix}",
+            # Schema-stable columns — populated by oneil_scorer downstream
+            "market_cap_crore": None,
+            "debt_to_equity": None,
+            "profit_ttm_crore": None,
+            "sector": (r.get("industry") or "").strip(),
         })
 
     out = pd.DataFrame(keep)
