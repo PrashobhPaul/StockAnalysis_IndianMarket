@@ -1,4 +1,4 @@
-name: "📈 Stoke Analysis Daily Pipeline"
+name: "📈 StockAnalysis IndianMarket DailyPipeline"
 
 on:
   schedule:
@@ -29,86 +29,65 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Install dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Cache FinBERT weights
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: .cache/huggingface
           key: finbert-v1-${{ runner.os }}-prosusai
-          restore-keys: |
-            finbert-v1-${{ runner.os }}-
+          restore-keys: finbert-v1-${{ runner.os }}-
 
-      - name: Cache OHLCV parquet
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: .cache/ohlcv
           key: ohlcv-${{ runner.os }}-${{ hashFiles('config/universe_sources.yml') }}-${{ github.run_id }}
-          restore-keys: |
-            ohlcv-${{ runner.os }}-${{ hashFiles('config/universe_sources.yml') }}-
+          restore-keys: ohlcv-${{ runner.os }}-${{ hashFiles('config/universe_sources.yml') }}-
 
-      - name: Run pipeline (verbose, with retry)
-        run: |
-          set -e
-          python -m api.daily 2>&1 | tee pipeline.log
-          echo "✅ Pipeline succeeded"
-          exit 0
+      - name: Run pipeline
+        run: python -m api.daily
 
-      - name: Show pipeline log on failure
-        if: failure()
-        run: |
-          echo "Pipeline log:"
-          cat pipeline.log || echo "(no log file)"
-
-      - name: Commit artifacts
-        if: success()
+      - name: Commit outputs
+        if: always()
         run: |
           git config --global user.name "profitpilot-bot"
           git config --global user.email "bot@profitpilot.local"
           git add predictions.json news_cache.json 2>/dev/null || true
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
+          if ! git diff --staged --quiet; then
             IST=$(TZ='Asia/Kolkata' date '+%Y-%m-%d %H:%M IST')
-            git commit -m "📈 predictions + news — ${IST}"
+            git commit -m "📈 predictions — ${IST}"
             git push
           fi
 
       - name: Summary
         if: always()
         run: |
-          echo "## 📈 ProfitPilot v3 Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 📈 ProfitPilot v3 Run Summary" >> $GITHUB_STEP_SUMMARY
           if [ -f predictions.json ]; then
-            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+            python - <<'PY' >> $GITHUB_STEP_SUMMARY
 import json
 d = json.load(open("predictions.json"))
 stale = d.get("_stale", False)
-regime = d.get("regime", {})
-brief = d.get("brief", {})
 counts = d.get("counts", {})
 picks = d.get("picks", [])
 print("⚠️ **STALE**" if stale else "✅ **FRESH**")
 print(f"- **Generated:** {d.get('generated_at_ist','?')}")
 print(f"- **Picks:** {counts.get('picks','?')} | Near-misses: {counts.get('near_misses','?')}")
 if picks:
-    print(f"\n### Top Picks")
-    for i, p in enumerate(picks[:3], 1):
-        print(f"{i}. **{p.get('symbol','?')}** — {p.get('score','?')} | Win: {p.get('backtest_winrate_pct','—')}%")
+  print(f"\n### Top 3 Picks")
+  for i, p in enumerate(picks[:3], 1):
+    print(f"{i}. **{p.get('symbol','?')}** — Score: {p.get('score','?')} | Win%: {p.get('backtest_winrate_pct','—')}")
 PY
           else
-            echo "❌ predictions.json not found"
+            echo "❌ predictions.json not found — pipeline may have failed"
           fi
