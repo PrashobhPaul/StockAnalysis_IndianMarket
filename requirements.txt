@@ -22,4 +22,5 @@ safetensors>=0.4.0
 
 # ───── CANSLIM / fundamentals ───────────────────────────────────
 # Optional NSE fallback — nselib works without login; guarded by import.
-nselib>=3.0.0; python_version >= "3.10"
+# Note: nselib max version on PyPI is 2.4.7 (not 3.0+)
+nselib>=2.4.0; python_version >= "3.10"
