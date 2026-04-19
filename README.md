@@ -1,4 +1,4 @@
-# ProfitPilot v3
+# Stock Analysis for Indian Market
 
 **Indian Stock Market Analysis with backtest-gated NSE stock intelligence.**
 
